@@ -18,6 +18,19 @@ CREATE TABLE IF NOT EXISTS subtarefas (
         REFERENCES tarefas(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS checklist_anexos (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    subtarefa_id INT NOT NULL,
+    nome_original VARCHAR(255) NOT NULL,
+    arquivo VARCHAR(80) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    tamanho BIGINT UNSIGNED NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_checklist_anexo_arquivo (arquivo),
+    CONSTRAINT fk_checklist_anexo_subtarefa FOREIGN KEY (subtarefa_id)
+        REFERENCES subtarefas(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS etiquetas (
     id INT AUTO_INCREMENT PRIMARY KEY,
     nome VARCHAR(40) NOT NULL,

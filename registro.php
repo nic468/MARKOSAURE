@@ -1,3 +1,7 @@
+<?php
+header('Cache-Control: no-cache, must-revalidate');
+$registroScriptVersion = filemtime(__DIR__ . '/assets/js/registro.js');
+?>
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
@@ -11,7 +15,7 @@
 <body>
 <nav class="navbar navbar-dark bg-dark mb-4">
   <div class="container-fluid">
-    <span class="navbar-brand mb-0 h1"><i class="bi bi-journal-text me-2"></i>Registro de Tarefas</span>
+    <a href="index.php" class="navbar-brand mb-0 h1" aria-label="Ir para o início"><i class="bi bi-journal-text me-2"></i>Registro de Tarefas</a>
     <div class="d-flex gap-2">
       <a href="dashboard.php" class="btn btn-outline-light btn-sm"><i class="bi bi-bar-chart-fill"></i> Dashboard</a>
       <a href="index.php" class="btn btn-outline-light btn-sm"><i class="bi bi-kanban-fill"></i> Voltar ao quadro</a>
@@ -29,6 +33,18 @@
     </div>
   </div>
 </main>
-<script src="assets/js/registro.js"></script>
+<div class="modal fade" id="modalDetalhesRegistro" tabindex="-1" aria-labelledby="modalDetalhesRegistroTitulo" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalDetalhesRegistroTitulo">Detalhes da tarefa</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body" id="registro-detalhes-conteudo"></div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="assets/js/registro.js?v=<?= $registroScriptVersion ?>"></script>
 </body>
 </html>

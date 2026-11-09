@@ -8,6 +8,8 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/task_lifecycle.php';
+require_once __DIR__ . '/checklist_attachments_storage.php';
 
 $pdo    = getConnection();
 $metodo = $_SERVER['REQUEST_METHOD'];
@@ -25,6 +27,55 @@ function corpoRequisicao(): array
     return is_array($input) ? $input : [];
 }
 
+function obterDadosRecorrencia(array $dados): array
+{
+    $recorrente = !empty($dados['recorrente']);
+    $frequencia = $recorrente ? (string)($dados['frequencia'] ?? 'nenhuma') : 'nenhuma';
+    $frequenciasPermitidas = ['nenhuma', 'diaria', 'semanal', 'mensal', 'anual', 'personalizada'];
+
+    if (!in_array($frequencia, $frequenciasPermitidas, true)) {
+        responder(false, ['erro' => 'Frequência de recorrência inválida.'], 422);
+    }
+
+    $diasSelecionados = [];
+    if ($frequencia === 'personalizada') {
+        $diasRecebidos = $dados['dias_semana'] ?? [];
+        if (!is_array($diasRecebidos)) {
+            responder(false, ['erro' => 'Selecione pelo menos um dia da semana para a recorrência personalizada.'], 422);
+        }
+
+        foreach ($diasRecebidos as $dia) {
+            $dia = (string)$dia;
+            if (!in_array($dia, ['0', '1', '2', '3', '4', '5', '6'], true)) {
+                responder(false, ['erro' => 'Um ou mais dias selecionados são inválidos.'], 422);
+            }
+            $diasSelecionados[] = (int)$dia;
+        }
+        $diasSelecionados = array_values(array_unique($diasSelecionados));
+        sort($diasSelecionados);
+
+        if (!$diasSelecionados) {
+            responder(false, ['erro' => 'Selecione pelo menos um dia da semana para a recorrência personalizada.'], 422);
+        }
+    }
+
+    $horarioRecorrencia = null;
+    if ($recorrente && !empty($dados['horario_recorrencia'])) {
+        $horarioRecebido = (string)$dados['horario_recorrencia'];
+        if (!preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $horarioRecebido)) {
+            responder(false, ['erro' => 'Informe um horário válido para a recorrência.'], 422);
+        }
+        $horarioRecorrencia = $horarioRecebido;
+    }
+
+    return [
+        'recorrente' => $recorrente,
+        'frequencia' => $frequencia,
+        'dias_semana' => $diasSelecionados ? implode(',', $diasSelecionados) : null,
+        'horario_recorrencia' => $horarioRecorrencia,
+    ];
+}
+
 function ensureSchema(PDO $pdo): void
 {
     $pdo->exec("CREATE TABLE IF NOT EXISTS tarefas_historico (
@@ -35,13 +86,17 @@ function ensureSchema(PDO $pdo): void
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT fk_hist_tarefa FOREIGN KEY (tarefa_id) REFERENCES tarefas(id) ON DELETE CASCADE
     )");
+    garantirTabelaAnexosChecklist($pdo);
 
     $colunas = [
         'status' => "ALTER TABLE tarefas ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'aberta'",
         'cancelamento_motivo' => "ALTER TABLE tarefas ADD COLUMN cancelamento_motivo TEXT NULL",
         'encerrada_em' => "ALTER TABLE tarefas ADD COLUMN encerrada_em TIMESTAMP NULL DEFAULT NULL",
+        'concluida_em' => "ALTER TABLE tarefas ADD COLUMN concluida_em TIMESTAMP NULL DEFAULT NULL",
         'recorrente' => "ALTER TABLE tarefas ADD COLUMN recorrente TINYINT(1) NOT NULL DEFAULT 0",
         'frequencia' => "ALTER TABLE tarefas ADD COLUMN frequencia VARCHAR(20) NOT NULL DEFAULT 'nenhuma'",
+        'dias_semana' => "ALTER TABLE tarefas ADD COLUMN dias_semana VARCHAR(13) NULL DEFAULT NULL",
+        'horario_recorrencia' => "ALTER TABLE tarefas ADD COLUMN horario_recorrencia TIME NULL DEFAULT NULL",
         'proxima_repeticao' => "ALTER TABLE tarefas ADD COLUMN proxima_repeticao DATE NULL",
     ];
 
@@ -54,33 +109,6 @@ function ensureSchema(PDO $pdo): void
     }
 }
 
-function registrarHistorico(PDO $pdo, int $tarefaId, string $tipo, string $mensagem): void
-{
-    $stmt = $pdo->prepare('INSERT INTO tarefas_historico (tarefa_id, tipo, mensagem) VALUES (?, ?, ?)');
-    $stmt->execute([$tarefaId, $tipo, $mensagem]);
-}
-
-function calcularProximaData(string $frequencia): ?string
-{
-    if ($frequencia === 'diaria') {
-        return date('Y-m-d', strtotime('+1 day'));
-    }
-
-    if ($frequencia === 'semanal') {
-        return date('Y-m-d', strtotime('+7 days'));
-    }
-
-    if ($frequencia === 'mensal') {
-        return date('Y-m-d', strtotime('+1 month'));
-    }
-
-    if ($frequencia === 'anual') {
-        return date('Y-m-d', strtotime('+1 year'));
-    }
-
-    return null;
-}
-
 function obterNomeColuna(PDO $pdo, int $colunaId): string
 {
     $stmt = $pdo->prepare('SELECT nome FROM colunas WHERE id = ?');
@@ -88,21 +116,9 @@ function obterNomeColuna(PDO $pdo, int $colunaId): string
     return (string)$stmt->fetchColumn();
 }
 
-function obterPrimeiraColuna(PDO $pdo): int
-{
-    $stmt = $pdo->query('SELECT id FROM colunas ORDER BY ordem ASC, id ASC LIMIT 1');
-    return (int)$stmt->fetchColumn();
-}
-
-function obterUltimaColuna(PDO $pdo): int
-{
-    $stmt = $pdo->query('SELECT id FROM colunas ORDER BY ordem DESC, id DESC LIMIT 1');
-    return (int)$stmt->fetchColumn();
-}
-
-ensureSchema($pdo);
-
 try {
+    ensureSchema($pdo);
+
     switch ($metodo) {
 
         // ---------------------------------------------------------
@@ -113,7 +129,7 @@ try {
                 $stmt = $pdo->query("SELECT t.*, c.nome AS coluna_nome
                     FROM tarefas t
                     LEFT JOIN colunas c ON c.id = t.coluna_id
-                    WHERE t.status IN ('concluida', 'cancelada') OR t.concluida_em IS NOT NULL
+                    WHERE t.status IN ('concluida', 'cancelada')
                     ORDER BY COALESCE(t.encerrada_em, t.concluida_em) DESC, t.id DESC");
                 responder(true, ['registros' => $stmt->fetchAll()]);
             }
@@ -123,6 +139,49 @@ try {
                 $stmt = $pdo->prepare('SELECT id, tipo, mensagem, created_at FROM tarefas_historico WHERE tarefa_id = ? ORDER BY created_at DESC, id DESC LIMIT 20');
                 $stmt->execute([$tarefaId]);
                 responder(true, ['historico' => $stmt->fetchAll()]);
+            }
+
+            if (isset($_GET['registro_tarefa_id'])) {
+                $tarefaId = (int)$_GET['registro_tarefa_id'];
+                $stmt = $pdo->prepare('SELECT t.*, c.nome AS coluna_nome
+                    FROM tarefas t
+                    LEFT JOIN colunas c ON c.id = t.coluna_id
+                    WHERE t.id = ? AND t.status IN (\'concluida\', \'cancelada\')');
+                $stmt->execute([$tarefaId]);
+                $tarefa = $stmt->fetch();
+                if (!$tarefa) {
+                    responder(false, ['erro' => 'Tarefa encerrada não encontrada.'], 404);
+                }
+
+                $stmt = $pdo->prepare('SELECT id, titulo, concluida, ordem FROM subtarefas WHERE tarefa_id = ? ORDER BY ordem ASC, id ASC');
+                $stmt->execute([$tarefaId]);
+                $subtarefas = $stmt->fetchAll();
+
+                $stmt = $pdo->prepare('SELECT a.id, a.subtarefa_id, a.nome_original, a.mime_type, a.tamanho, a.created_at
+                    FROM checklist_anexos a
+                    INNER JOIN subtarefas s ON s.id = a.subtarefa_id
+                    WHERE s.tarefa_id = ?
+                    ORDER BY a.created_at ASC, a.id ASC');
+                $stmt->execute([$tarefaId]);
+                $anexosChecklist = $stmt->fetchAll();
+
+                $stmt = $pdo->prepare('SELECT e.id, e.nome, e.cor
+                    FROM etiquetas e
+                    INNER JOIN tarefa_etiquetas te ON te.etiqueta_id = e.id
+                    WHERE te.tarefa_id = ?
+                    ORDER BY e.nome');
+                $stmt->execute([$tarefaId]);
+                $etiquetas = $stmt->fetchAll();
+
+                $stmt = $pdo->prepare('SELECT id, tipo, mensagem, created_at FROM tarefas_historico WHERE tarefa_id = ? ORDER BY created_at DESC, id DESC');
+                $stmt->execute([$tarefaId]);
+                responder(true, [
+                    'tarefa' => $tarefa,
+                    'subtarefas' => $subtarefas,
+                    'anexos_checklist' => $anexosChecklist,
+                    'etiquetas' => $etiquetas,
+                    'historico' => $stmt->fetchAll(),
+                ]);
             }
 
             $sql = "SELECT t.*,
@@ -146,11 +205,7 @@ try {
             $descricao = trim($dados['descricao'] ?? '');
             $prioridade = $dados['prioridade'] ?? 'media';
             $vencimento = !empty($dados['data_vencimento']) ? $dados['data_vencimento'] : null;
-            $recorrente = !empty($dados['recorrente']);
-            $frequencia = $recorrente ? ($dados['frequencia'] ?? 'nenhuma') : 'nenhuma';
-            if (!in_array($frequencia, ['nenhuma', 'diaria', 'semanal', 'mensal', 'anual'], true)) {
-                $frequencia = 'nenhuma';
-            }
+            $recorrencia = obterDadosRecorrencia($dados);
 
             if ($titulo === '' || $colunaId <= 0) {
                 responder(false, ['erro' => 'Título e coluna são obrigatórios.'], 422);
@@ -166,8 +221,8 @@ try {
             $proximaOrdem = (int)$stmtOrdem->fetch()['proxima'];
 
             $stmt = $pdo->prepare(
-                'INSERT INTO tarefas (coluna_id, titulo, descricao, prioridade, data_vencimento, ordem, recorrente, frequencia, proxima_repeticao)
-                 VALUES (:coluna_id, :titulo, :descricao, :prioridade, :data_vencimento, :ordem, :recorrente, :frequencia, :proxima_repeticao)'
+                'INSERT INTO tarefas (coluna_id, titulo, descricao, prioridade, data_vencimento, ordem, recorrente, frequencia, dias_semana, horario_recorrencia, proxima_repeticao)
+                 VALUES (:coluna_id, :titulo, :descricao, :prioridade, :data_vencimento, :ordem, :recorrente, :frequencia, :dias_semana, :horario_recorrencia, :proxima_repeticao)'
             );
             $stmt->execute([
                 ':coluna_id'         => $colunaId,
@@ -176,9 +231,13 @@ try {
                 ':prioridade'        => $prioridade,
                 ':data_vencimento'   => $vencimento,
                 ':ordem'             => $proximaOrdem,
-                ':recorrente'        => (int)$recorrente,
-                ':frequencia'        => $frequencia,
-                ':proxima_repeticao' => $recorrente ? calcularProximaData($frequencia) : null,
+                ':recorrente'        => (int)$recorrencia['recorrente'],
+                ':frequencia'        => $recorrencia['frequencia'],
+                ':dias_semana'       => $recorrencia['dias_semana'],
+                ':horario_recorrencia' => $recorrencia['horario_recorrencia'],
+                ':proxima_repeticao' => $recorrencia['recorrente']
+                    ? calcularProximaData($recorrencia['frequencia'], $recorrencia['dias_semana'], $recorrencia['horario_recorrencia'])
+                    : null,
             ]);
 
             $tarefaId = (int)$pdo->lastInsertId();
@@ -211,52 +270,95 @@ try {
                 responder(true);
             }
 
+            if (($dados['acao'] ?? '') === 'concluir') {
+                $titulo = trim($dados['titulo'] ?? '');
+                $colunaId = (int)($dados['coluna_id'] ?? 0);
+                $descricao = trim($dados['descricao'] ?? '');
+                $prioridade = $dados['prioridade'] ?? 'media';
+                $vencimento = !empty($dados['data_vencimento']) ? $dados['data_vencimento'] : null;
+                $recorrencia = obterDadosRecorrencia($dados);
+
+                if ($titulo === '' || $colunaId <= 0) {
+                    responder(false, ['erro' => 'Título e coluna são obrigatórios.'], 422);
+                }
+                if (!in_array($prioridade, ['baixa', 'media', 'alta'], true)) {
+                    $prioridade = 'media';
+                }
+                $stmt = $pdo->prepare('SELECT id FROM colunas WHERE id = ?');
+                $stmt->execute([$colunaId]);
+                if (!$stmt->fetchColumn()) {
+                    responder(false, ['erro' => 'Coluna não encontrada.'], 404);
+                }
+
+                $pdo->beginTransaction();
+                $stmt = $pdo->prepare('SELECT id, status FROM tarefas WHERE id = ? FOR UPDATE');
+                $stmt->execute([$id]);
+                $tarefaBase = $stmt->fetch();
+                if (!$tarefaBase) {
+                    $pdo->rollBack();
+                    responder(false, ['erro' => 'Tarefa não encontrada.'], 404);
+                }
+                if ($tarefaBase['status'] === 'concluida') {
+                    $pdo->commit();
+                    responder(true);
+                }
+                if ($tarefaBase['status'] === 'cancelada') {
+                    $pdo->rollBack();
+                    responder(false, ['erro' => 'Uma tarefa cancelada não pode ser concluída.'], 422);
+                }
+
+                $stmt = $pdo->prepare(
+                    "UPDATE tarefas SET coluna_id = :coluna_id, ordem = 999, titulo = :titulo, descricao = :descricao,
+                     prioridade = :prioridade, data_vencimento = :data_vencimento, recorrente = :recorrente,
+                     frequencia = :frequencia, dias_semana = :dias_semana, horario_recorrencia = :horario_recorrencia,
+                     proxima_repeticao = :proxima_repeticao, status = 'concluida',
+                     cancelamento_motivo = NULL, encerrada_em = COALESCE(encerrada_em, NOW()),
+                     concluida_em = COALESCE(concluida_em, NOW()) WHERE id = :id"
+                );
+                $stmt->execute([
+                    ':coluna_id' => $colunaId,
+                    ':titulo' => $titulo,
+                    ':descricao' => $descricao,
+                    ':prioridade' => $prioridade,
+                    ':data_vencimento' => $vencimento,
+                    ':recorrente' => (int)$recorrencia['recorrente'],
+                    ':frequencia' => $recorrencia['frequencia'],
+                    ':dias_semana' => $recorrencia['dias_semana'],
+                    ':horario_recorrencia' => $recorrencia['horario_recorrencia'],
+                    ':proxima_repeticao' => $recorrencia['recorrente']
+                        ? calcularProximaData($recorrencia['frequencia'], $recorrencia['dias_semana'], $recorrencia['horario_recorrencia'])
+                        : null,
+                    ':id' => $id,
+                ]);
+                registrarHistorico($pdo, $id, 'concluida', 'Tarefa marcada como concluída.');
+
+                criarProximaOcorrencia($pdo, $id);
+
+                $pdo->commit();
+                responder(true);
+            }
+
             // Movimentação simples (drag-and-drop): apenas coluna_id + ordem
             if (isset($dados['mover']) && $dados['mover'] === true) {
                 $colunaId = (int)($dados['coluna_id'] ?? 0);
                 $ordem    = (int)($dados['ordem'] ?? 0);
 
-                $stmt = $pdo->prepare('SELECT titulo, recorrente, frequencia FROM tarefas WHERE id = ?');
+                $pdo->beginTransaction();
+                $stmt = $pdo->prepare('SELECT id FROM tarefas WHERE id = ? FOR UPDATE');
                 $stmt->execute([$id]);
                 $tarefaBase = $stmt->fetch();
-
+                if (!$tarefaBase) {
+                    $pdo->rollBack();
+                    responder(false, ['erro' => 'Tarefa não encontrada.'], 404);
+                }
                 $stmt = $pdo->prepare('UPDATE tarefas SET coluna_id = :coluna_id, ordem = :ordem WHERE id = :id');
                 $stmt->execute([':coluna_id' => $colunaId, ':ordem' => $ordem, ':id' => $id]);
 
-                $ultimaColuna = obterUltimaColuna($pdo);
                 $nomeColuna = obterNomeColuna($pdo, $colunaId);
-
-                if ($colunaId === $ultimaColuna) {
-                    $pdo->prepare('UPDATE tarefas SET concluida_em = COALESCE(concluida_em, NOW()) WHERE id = ?')->execute([$id]);
-                    $pdo->prepare("UPDATE tarefas SET status = 'concluida', encerrada_em = COALESCE(encerrada_em, NOW()), cancelamento_motivo = NULL WHERE id = ?")->execute([$id]);
-                    registrarHistorico($pdo, $id, 'concluida', 'Tarefa marcada como concluída.');
-                } else {
-                    $pdo->prepare("UPDATE tarefas SET concluida_em = NULL, status = 'aberta', encerrada_em = NULL, cancelamento_motivo = NULL WHERE id = ?")->execute([$id]);
-                }
 
                 registrarHistorico($pdo, $id, 'movida', 'Tarefa movida para a coluna ' . $nomeColuna . '.');
 
-                if ($colunaId === $ultimaColuna && $tarefaBase && !empty($tarefaBase['recorrente'])) {
-                    $primeiraColuna = obterPrimeiraColuna($pdo);
-                    $proximaData = calcularProximaData($tarefaBase['frequencia'] ?? 'nenhuma');
-                    $stmtNovo = $pdo->prepare(
-                        'INSERT INTO tarefas (coluna_id, titulo, descricao, prioridade, data_vencimento, ordem, recorrente, frequencia, proxima_repeticao)
-                         SELECT :coluna_id, titulo, descricao, prioridade, :data_vencimento, :ordem, recorrente, frequencia, :proxima_repeticao
-                         FROM tarefas WHERE id = :id'
-                    );
-                    $stmtNovo->execute([
-                        ':coluna_id'         => $primeiraColuna,
-                        ':data_vencimento'   => $proximaData,
-                        ':ordem'             => 1,
-                        ':proxima_repeticao' => $proximaData,
-                        ':id'                => $id,
-                    ]);
-
-                    $novaTarefaId = (int)$pdo->lastInsertId();
-                    registrarHistorico($pdo, $id, 'repetida', 'Tarefa recorrente concluída e uma nova ocorrência foi criada.');
-                    registrarHistorico($pdo, $novaTarefaId, 'criada', 'Ocorrência criada automaticamente por recorrência.');
-                }
-
+                $pdo->commit();
                 responder(true);
                 break;
             }
@@ -266,11 +368,7 @@ try {
             $descricao  = trim($dados['descricao'] ?? '');
             $prioridade = $dados['prioridade'] ?? 'media';
             $vencimento = !empty($dados['data_vencimento']) ? $dados['data_vencimento'] : null;
-            $recorrente = !empty($dados['recorrente']);
-            $frequencia = $recorrente ? ($dados['frequencia'] ?? 'nenhuma') : 'nenhuma';
-            if (!in_array($frequencia, ['nenhuma', 'diaria', 'semanal', 'mensal', 'anual'], true)) {
-                $frequencia = 'nenhuma';
-            }
+            $recorrencia = obterDadosRecorrencia($dados);
 
             if ($titulo === '') {
                 responder(false, ['erro' => 'Título é obrigatório.'], 422);
@@ -282,7 +380,9 @@ try {
 
             $stmt = $pdo->prepare(
                 'UPDATE tarefas
-                 SET titulo = :titulo, descricao = :descricao, prioridade = :prioridade, data_vencimento = :data_vencimento, recorrente = :recorrente, frequencia = :frequencia, proxima_repeticao = :proxima_repeticao
+                 SET titulo = :titulo, descricao = :descricao, prioridade = :prioridade, data_vencimento = :data_vencimento,
+                     recorrente = :recorrente, frequencia = :frequencia, dias_semana = :dias_semana,
+                     horario_recorrencia = :horario_recorrencia, proxima_repeticao = :proxima_repeticao
                  WHERE id = :id'
             );
             $stmt->execute([
@@ -290,9 +390,13 @@ try {
                 ':descricao'         => $descricao,
                 ':prioridade'        => $prioridade,
                 ':data_vencimento'   => $vencimento,
-                ':recorrente'        => (int)$recorrente,
-                ':frequencia'        => $frequencia,
-                ':proxima_repeticao' => $recorrente ? calcularProximaData($frequencia) : null,
+                ':recorrente'        => (int)$recorrencia['recorrente'],
+                ':frequencia'        => $recorrencia['frequencia'],
+                ':dias_semana'       => $recorrencia['dias_semana'],
+                ':horario_recorrencia' => $recorrencia['horario_recorrencia'],
+                ':proxima_repeticao' => $recorrencia['recorrente']
+                    ? calcularProximaData($recorrencia['frequencia'], $recorrencia['dias_semana'], $recorrencia['horario_recorrencia'])
+                    : null,
                 ':id'                => $id,
             ]);
 
@@ -311,15 +415,24 @@ try {
                 responder(false, ['erro' => 'ID da tarefa inválido.'], 422);
             }
 
+            $stmtAnexos = $pdo->prepare('SELECT a.arquivo FROM checklist_anexos a
+                INNER JOIN subtarefas s ON s.id = a.subtarefa_id WHERE s.tarefa_id = ?');
+            $stmtAnexos->execute([$id]);
+            $arquivosAnexos = $stmtAnexos->fetchAll(PDO::FETCH_COLUMN);
+
             $stmt = $pdo->prepare('DELETE FROM tarefas WHERE id = ?');
             $stmt->execute([$id]);
 
-            responder(true);
+            $avisos = limparArquivosAnexosChecklist($arquivosAnexos);
+            responder(true, $avisos ? ['aviso' => 'A tarefa foi removida, mas alguns arquivos anexados não puderam ser limpos do armazenamento.'] : []);
             break;
 
         default:
             responder(false, ['erro' => 'Método não suportado.'], 405);
     }
 } catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     responder(false, ['erro' => 'Erro interno: ' . $e->getMessage()], 500);
 }

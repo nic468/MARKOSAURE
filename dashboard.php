@@ -1,3 +1,6 @@
+<?php
+$dashboardScriptVersion = filemtime(__DIR__ . '/assets/js/dashboard.js');
+?>
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
@@ -12,9 +15,9 @@
 
 <nav class="navbar navbar-dark bg-dark mb-4">
     <div class="container-fluid">
-        <span class="navbar-brand mb-0 h1">
+        <a href="index.php" class="navbar-brand mb-0 h1" aria-label="Ir para o início">
             <i class="bi bi-bar-chart-fill me-2"></i>Dashboard
-        </span>
+        </a>
         <div class="d-flex gap-2">
             <a href="registro.php" class="btn btn-outline-light btn-sm">
                 <i class="bi bi-journal-text"></i> Registro
@@ -88,6 +91,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="assets/js/dashboard.js"></script>
+<script src="assets/js/dashboard.js?v=<?= $dashboardScriptVersion ?>"></script>
 </body>
 </html>

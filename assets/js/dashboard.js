@@ -23,18 +23,29 @@ async function carregarDashboard() {
 
 function montarKpis(tarefas, colunas) {
     const ultimaColunaId = colunas.reduce((max, c) => Number(c.ordem) > max.ordem ? c : max, colunas[0])?.id;
-    const hoje = new Date(new Date().toDateString());
+    const hoje = obterDataHojeSaoPaulo();
 
     const concluidas = tarefas.filter(t => t.concluida_em !== null).length;
     const abertas = tarefas.length - concluidas;
     const vencidas = tarefas.filter(t =>
-        t.concluida_em === null && t.data_vencimento && new Date(t.data_vencimento) < hoje
+        t.concluida_em === null && t.data_vencimento && String(t.data_vencimento).slice(0, 10) < hoje
     ).length;
 
     document.getElementById('kpi-total').textContent = tarefas.length;
     document.getElementById('kpi-concluidas').textContent = concluidas;
     document.getElementById('kpi-abertas').textContent = abertas;
     document.getElementById('kpi-vencidas').textContent = vencidas;
+}
+
+function obterDataHojeSaoPaulo() {
+    const partes = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(new Date());
+    const valores = Object.fromEntries(partes.filter(parte => parte.type !== 'literal').map(parte => [parte.type, parte.value]));
+    return `${valores.year}-${valores.month}-${valores.day}`;
 }
 
 function montarGraficoColunas(tarefas, colunas) {

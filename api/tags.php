@@ -6,6 +6,7 @@
  *   GET    (sem params)  -> todas as etiquetas cadastradas
  *   POST   { nome, cor } -> cria etiqueta nova
  *   POST   { tarefa_id, etiqueta_id, associar: true/false } -> vincula/desvincula
+ *   PUT    { id, nome, cor } -> atualiza uma etiqueta
  *   DELETE ?id=X          -> exclui etiqueta (remove de todas as tarefas)
  */
 
@@ -98,6 +99,43 @@ try {
             }
 
             $pdo->prepare('DELETE FROM etiquetas WHERE id = ?')->execute([$id]);
+            responder(true);
+            break;
+
+        case 'PUT':
+            $dados = corpoRequisicao();
+            $id = (int)($dados['id'] ?? 0);
+            $nome = trim((string)($dados['nome'] ?? ''));
+            $cor = trim((string)($dados['cor'] ?? ''));
+
+            if ($id <= 0) {
+                responder(false, ['erro' => 'ID inválido.'], 422);
+            }
+            if ($nome === '' || mb_strlen($nome) > 40) {
+                responder(false, ['erro' => 'Informe um nome de até 40 caracteres.'], 422);
+            }
+            if (!preg_match('/^#[0-9a-fA-F]{6}$/', $cor)) {
+                responder(false, ['erro' => 'Informe uma cor hexadecimal válida.'], 422);
+            }
+
+            try {
+                $stmt = $pdo->prepare('UPDATE etiquetas SET nome = ?, cor = ? WHERE id = ?');
+                $stmt->execute([$nome, $cor, $id]);
+            } catch (PDOException $e) {
+                if ($e->getCode() === '23000') {
+                    responder(false, ['erro' => 'Já existe uma etiqueta com esse nome.'], 409);
+                }
+                throw $e;
+            }
+
+            if ($stmt->rowCount() === 0) {
+                $stmt = $pdo->prepare('SELECT 1 FROM etiquetas WHERE id = ?');
+                $stmt->execute([$id]);
+                if (!$stmt->fetchColumn()) {
+                    responder(false, ['erro' => 'Etiqueta não encontrada.'], 404);
+                }
+            }
+
             responder(true);
             break;
 

@@ -1,38 +1,133 @@
+:root {
+    --surface: #fff;
+    --surface-muted: #f8fafc;
+    --border-subtle: #e2e8f0;
+    --text-primary: #172033;
+    --text-muted: #64748b;
+    --shadow-card: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
 body {
-    background: linear-gradient(135deg, #f4f7fb 0%, #eef2f7 100%);
-    color: #172033;
+    background: #f3f6fb;
+    color: var(--text-primary);
     min-height: 100vh;
 }
 
 .navbar {
     box-shadow: 0 4px 18px rgba(15, 23, 42, 0.12);
+    padding-block: .7rem;
 }
 
 .board-toolbar {
-    border: 1px solid rgba(148, 163, 184, 0.2);
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.82);
-    backdrop-filter: blur(12px);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+.board-toolbar .card-body {
+    padding: 1.25rem;
+}
+
+.kanban-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1.8fr) minmax(330px, .95fr);
+    align-items: start;
+    gap: 1rem;
 }
 
 .board {
+    min-width: 0;
+    min-height: 70vh;
     overflow-x: auto;
     align-items: flex-start;
-    min-height: 70vh;
     padding-bottom: 1rem;
 }
 
+.proximas-vencer-card {
+    position: sticky;
+    top: 1rem;
+    min-height: 70vh;
+    max-height: calc(100vh - 2rem);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+}
+
+.proximas-vencer-card .card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 1.1rem;
+}
+
+.proximas-vencer-cabecalho h5 {
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.proximas-vencer-icone {
+    display: grid;
+    width: 2.25rem;
+    height: 2.25rem;
+    flex: 0 0 2.25rem;
+    place-items: center;
+    border-radius: 10px;
+    background: #eff6ff;
+    color: #2563eb;
+}
+
+.proximas-vencer-busca {
+    width: 100%;
+}
+
+.proximas-vencer-busca .input-group-text {
+    border-color: var(--border-subtle);
+    color: var(--text-muted);
+}
+
+.proximas-vencer-lista {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    gap: .55rem;
+    padding: .15rem .25rem .25rem 0;
+}
+
+.proximas-vencer-item {
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: 10px !important;
+    padding: .8rem;
+    background: var(--surface);
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+
+.proximas-vencer-item:hover {
+    border-color: #93c5fd !important;
+    box-shadow: 0 5px 14px rgba(37, 99, 235, .09);
+    transform: translateY(-1px);
+}
+
+.proximas-vencer-item:focus-visible,
+.btn:focus-visible,
+.form-control:focus-visible,
+.form-select:focus-visible {
+    outline: 3px solid rgba(59, 130, 246, .3);
+    outline-offset: 2px;
+}
+
 .coluna {
-    background: linear-gradient(180deg, #f8fafc 0%, #eef2f6 100%);
-    border: 1px solid rgba(148, 163, 184, 0.22);
-    border-radius: 16px;
+    background: #eef2f7;
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
     min-width: 300px;
     max-width: 300px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     max-height: 82vh;
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    box-shadow: var(--shadow-card);
 }
 
 .coluna-header {
@@ -77,8 +172,9 @@ body {
 }
 
 .card-tarefa {
-    background: #fff;
-    border-radius: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
     padding: 12px;
     margin-bottom: 10px;
     box-shadow: 0 1px 3px rgba(0,0,0,.08);
@@ -88,7 +184,7 @@ body {
 }
 
 .card-tarefa:hover {
-    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.1);
     transform: translateY(-2px);
 }
 
@@ -150,6 +246,49 @@ body {
     padding: .4em .7em;
 }
 
+#tarefa-etiquetas-lista .form-editar-etiqueta [name="nome"] {
+    width: 10rem;
+}
+
+#tarefa-etiquetas-lista .btn-editar-etiqueta,
+#tarefa-etiquetas-lista .btn-excluir-etiqueta {
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border-radius: 50%;
+    opacity: .72;
+}
+
+#tarefa-etiquetas-lista .etiqueta-item:hover .btn-editar-etiqueta,
+#tarefa-etiquetas-lista .etiqueta-item:hover .btn-excluir-etiqueta,
+#tarefa-etiquetas-lista .btn-editar-etiqueta:focus-visible,
+#tarefa-etiquetas-lista .btn-excluir-etiqueta:focus-visible {
+    opacity: 1;
+}
+
+.historico-toggle {
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-muted);
+    color: var(--text-primary);
+}
+
+.historico-chevron {
+    transition: transform .18s ease;
+}
+
+.historico-toggle:not(.collapsed) .historico-chevron {
+    transform: rotate(180deg);
+}
+
+#tarefa-historico {
+    max-height: 12rem;
+    overflow-y: auto;
+}
+
+#tarefa-dias-semana .btn {
+    min-width: 3.2rem;
+}
+
 #checklist-itens .list-group-item {
     border-left: none;
     border-right: none;
@@ -182,6 +321,28 @@ body {
     box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
 }
 
+.modal-header,
+.modal-footer {
+    border-color: var(--border-subtle);
+    padding: 1rem 1.25rem;
+}
+
+.modal-body {
+    padding: 1.25rem;
+}
+
+#modalTarefa #form-tarefa {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+}
+
+#modalTarefa #form-tarefa .modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
 .empty-board-state {
     width: 100%;
     min-height: 280px;
@@ -203,4 +364,58 @@ body {
     color: #64748b;
     background: rgba(255,255,255,0.4);
     font-size: 0.9rem;
+}
+
+@media (max-width: 991.98px) {
+    .kanban-workspace {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .proximas-vencer-card {
+        position: static;
+        min-height: 0;
+        max-height: 28rem;
+        order: 2;
+    }
+
+    .board {
+        min-height: 50vh;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .container-fluid.px-4 {
+        padding-inline: .75rem !important;
+    }
+
+    .board-toolbar .card-body {
+        padding: 1rem;
+    }
+
+    .board-toolbar .row > [class*="col-"] {
+        width: 100%;
+    }
+
+    .proximas-vencer-card .card-body {
+        padding: .9rem;
+    }
+
+    .navbar .container-fluid {
+        align-items: flex-start;
+        flex-wrap: wrap;
+        gap: .65rem;
+    }
+
+    .navbar .container-fluid > .d-flex {
+        flex-wrap: wrap;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+    }
 }

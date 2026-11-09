@@ -6,6 +6,7 @@ const API_TAREFAS   = 'api/tasks.php';
 const API_COLUNAS   = 'api/columns.php';
 const API_SUBTASKS  = 'api/subtasks.php';
 const API_TAGS      = 'api/tags.php';
+const API_ANEXOS_CHECKLIST = 'api/checklist_attachments.php';
 
 let colunas = [];
 let tarefas = [];
@@ -15,9 +16,34 @@ let tarefaArrastada = null;
 
 const filtros = { busca: '', prioridade: '', etiqueta: '' };
 
-const modalTarefa = new bootstrap.Modal(document.getElementById('modalTarefa'));
-const modalColuna = new bootstrap.Modal(document.getElementById('modalColuna'));
-const modalCancelamento = new bootstrap.Modal(document.getElementById('modalCancelamento'));
+function controlarModal(elementoId, acao) {
+    const Modal = window.bootstrap?.Modal;
+    if (!Modal) {
+        if (acao === 'show') {
+            mostrarToast('Não foi possível abrir a janela. Verifique a conexão e recarregue a página.', 'danger');
+        }
+        return;
+    }
+
+    Modal.getOrCreateInstance(document.getElementById(elementoId))[acao]();
+}
+
+async function buscarDados(url, tempoLimite = 15000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), tempoLimite);
+
+    try {
+        const resposta = await fetch(url, { signal: controller.signal });
+        return await resposta.json();
+    } catch (erro) {
+        if (erro.name === 'AbortError') {
+            throw new Error('A solicitação demorou demais. Verifique o servidor e tente novamente.');
+        }
+        throw erro;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
 
 // ------------------------------------------------------------
 // Inicialização
@@ -32,9 +58,10 @@ document.getElementById('form-coluna').addEventListener('submit', salvarColuna);
 document.getElementById('btn-excluir-tarefa').addEventListener('click', excluirTarefa);
 document.getElementById('btn-cancelar-tarefa').addEventListener('click', () => {
     document.getElementById('form-cancelamento').reset();
-    modalCancelamento.show();
+    controlarModal('modalCancelamento', 'show');
 });
 document.getElementById('form-cancelamento').addEventListener('submit', cancelarTarefa);
+document.getElementById('btn-concluir-tarefa').addEventListener('click', concluirTarefa);
 
 document.getElementById('btn-add-checklist').addEventListener('click', adicionarItemChecklist);
 document.getElementById('novo-item-checklist').addEventListener('keydown', e => {
@@ -66,8 +93,15 @@ document.getElementById('btn-limpar-filtros').addEventListener('click', () => {
     renderizarQuadro();
 });
 
+document.getElementById('filtro-proximas-busca').addEventListener('input', renderizarProximasAVencer);
+
 document.getElementById('tarefa-recorrente').addEventListener('change', atualizarEstadoRecorrencia);
 document.getElementById('tarefa-frequencia').addEventListener('change', atualizarEstadoRecorrencia);
+document.querySelectorAll('#tarefa-dias-semana input[type="checkbox"]').forEach(input => {
+    input.addEventListener('change', () => {
+        document.getElementById('tarefa-dias-erro').classList.add('d-none');
+    });
+});
 
 // ------------------------------------------------------------
 // Carregamento de dados
@@ -75,9 +109,9 @@ document.getElementById('tarefa-frequencia').addEventListener('change', atualiza
 async function carregarQuadro() {
     try {
         const [respColunas, respTarefas, respEtiquetas] = await Promise.all([
-            fetch(API_COLUNAS).then(r => r.json()),
-            fetch(API_TAREFAS).then(r => r.json()),
-            fetch(API_TAGS).then(r => r.json()),
+            buscarDados(API_COLUNAS),
+            buscarDados(API_TAREFAS),
+            buscarDados(API_TAGS),
         ]);
 
         if (!respColunas.sucesso || !respTarefas.sucesso) {
@@ -85,13 +119,16 @@ async function carregarQuadro() {
         }
 
         colunas = respColunas.colunas;
-        tarefas = respTarefas.tarefas.filter(t => t.status !== 'cancelada');
+        tarefas = respTarefas.tarefas.filter(tarefaVisivelNoQuadro);
         todasEtiquetas = respEtiquetas.sucesso ? respEtiquetas.etiquetas : [];
 
         renderizarQuadro();
+        renderizarProximasAVencer();
         preencherSelectColunas();
         preencherFiltroEtiquetas();
     } catch (erro) {
+        document.getElementById('lista-proximas-vencer').textContent =
+            'Não foi possível carregar as tarefas com vencimento. Recarregue a página para tentar novamente.';
         document.getElementById('board').innerHTML = `
             <div class="alert alert-danger w-100">
                 Não foi possível carregar o quadro. Verifique se o banco de dados
@@ -121,6 +158,10 @@ function tarefaPassaNosFiltros(tarefa) {
         if (!ids.includes(String(filtros.etiqueta))) return false;
     }
     return true;
+}
+
+function tarefaVisivelNoQuadro(tarefa) {
+    return !['cancelada', 'concluida'].includes(tarefa.status);
 }
 
 function renderizarQuadro() {
@@ -216,14 +257,66 @@ function renderizarQuadro() {
     board.appendChild(addColBtn);
 }
 
+function renderizarProximasAVencer() {
+    const lista = document.getElementById('lista-proximas-vencer');
+    const busca = document.getElementById('filtro-proximas-busca').value.trim().toLocaleLowerCase('pt-BR');
+    const hoje = obterDataHojeSaoPaulo();
+    const tarefasComVencimento = tarefas
+        .filter(tarefa => tarefaVisivelNoQuadro(tarefa) && dataCalendarioValida(tarefa.data_vencimento))
+        .filter(tarefa => !busca || String(tarefa.titulo || '').toLocaleLowerCase('pt-BR').includes(busca))
+        .sort((a, b) => String(a.data_vencimento).slice(0, 10).localeCompare(String(b.data_vencimento).slice(0, 10))
+            || Number(a.ordem || 0) - Number(b.ordem || 0)
+            || Number(a.id) - Number(b.id));
+
+    lista.replaceChildren();
+    if (!tarefasComVencimento.length) {
+        const vazio = document.createElement('div');
+        vazio.className = 'text-center text-muted py-3';
+        vazio.textContent = busca
+            ? 'Nenhuma tarefa com vencimento corresponde à busca.'
+            : 'Não há tarefas abertas com data de vencimento.';
+        lista.appendChild(vazio);
+        return;
+    }
+
+    tarefasComVencimento.forEach(tarefa => {
+        const dataVencimento = String(tarefa.data_vencimento).slice(0, 10);
+        const diasRestantes = diasEntreDatas(hoje, dataVencimento);
+        const urgencia = diasRestantes < 0
+            ? { texto: 'Atrasada', classe: 'text-bg-danger' }
+            : diasRestantes === 0
+                ? { texto: 'Vence hoje', classe: 'text-bg-warning' }
+                : { texto: `Vence em ${diasRestantes} ${diasRestantes === 1 ? 'dia' : 'dias'}`, classe: 'text-bg-primary' };
+        const coluna = colunas.find(item => Number(item.id) === Number(tarefa.coluna_id));
+        const horarioRecorrencia = tarefa.recorrente && tarefa.horario_recorrencia
+            ? `<span><i class="bi bi-arrow-repeat me-1"></i>Horário recorrente: ${escapeHtml(String(tarefa.horario_recorrencia).slice(0, 5))}</span>`
+            : '';
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'list-group-item list-group-item-action proximas-vencer-item text-start';
+        item.innerHTML = `
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+                <span class="fw-semibold">${escapeHtml(tarefa.titulo)}</span>
+                <span class="badge ${urgencia.classe}">${urgencia.texto}</span>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-3 mt-2 small text-muted">
+                <span><i class="bi bi-columns-gap me-1"></i>${escapeHtml(coluna?.nome || 'Sem coluna')}</span>
+                <span class="badge text-bg-light border">${escapeHtml(rotuloPrioridade(tarefa.prioridade))}</span>
+                <span><i class="bi bi-calendar-event me-1"></i>Vencimento: ${formatarData(dataVencimento)}</span>
+                ${horarioRecorrencia}
+            </div>`;
+        item.addEventListener('click', () => abrirModalTarefa(tarefa));
+        lista.appendChild(item);
+    });
+}
+
 function criarCardTarefa(tarefa) {
     const card = document.createElement('div');
     card.className = `card-tarefa prioridade-${tarefa.prioridade}`;
     card.draggable = true;
     card.dataset.tarefaId = tarefa.id;
 
-    const vencido = tarefa.data_vencimento && !tarefa.concluida_em &&
-        new Date(tarefa.data_vencimento) < new Date(new Date().toDateString());
+    const vencido = classificarVencimento(tarefa.data_vencimento) === 'atrasada';
     const dataFormatada = tarefa.data_vencimento ? formatarData(tarefa.data_vencimento) : '';
 
     const idsEtiquetas = (tarefa.etiquetas_ids || '').split(',').filter(Boolean).map(Number);
@@ -331,6 +424,11 @@ function elementoAposPosicao(container, y) {
 async function abrirModalTarefa(tarefa = null) {
     const form = document.getElementById('form-tarefa');
     form.reset();
+    document.getElementById('tarefa-dias-erro').classList.add('d-none');
+    window.bootstrap?.Collapse.getOrCreateInstance(
+        document.getElementById('historico-tarefa-collapse'),
+        { toggle: false }
+    ).hide();
 
     document.getElementById('tarefa-id').value = tarefa?.id ?? '';
     document.getElementById('tarefa-titulo').value = tarefa?.titulo ?? '';
@@ -340,12 +438,19 @@ async function abrirModalTarefa(tarefa = null) {
     document.getElementById('tarefa-coluna').value = tarefa?.coluna_id ?? (colunas[0]?.id ?? '');
     document.getElementById('tarefa-recorrente').checked = Boolean(tarefa?.recorrente);
     document.getElementById('tarefa-frequencia').value = tarefa?.frequencia ?? 'nenhuma';
+    const diasSelecionados = String(tarefa?.dias_semana ?? '').split(',').filter(Boolean);
+    document.getElementById('tarefa-horario-recorrencia').value = String(tarefa?.horario_recorrencia ?? '').slice(0, 5);
+    document.querySelectorAll('#tarefa-dias-semana input[type="checkbox"]').forEach(input => {
+        input.checked = diasSelecionados.includes(input.value);
+    });
     document.getElementById('tarefa-historico').innerHTML = '<small class="text-muted">Carregando histórico...</small>';
     atualizarEstadoRecorrencia();
 
     document.getElementById('modalTarefaTitulo').textContent = tarefa ? 'Editar Tarefa' : 'Nova Tarefa';
     document.getElementById('btn-excluir-tarefa').classList.toggle('d-none', !tarefa);
-    document.getElementById('btn-cancelar-tarefa').classList.toggle('d-none', !tarefa || tarefa.status === 'cancelada' || tarefa.concluida_em);
+    document.getElementById('btn-cancelar-tarefa').classList.toggle('d-none', !tarefa || ['cancelada', 'concluida'].includes(tarefa.status));
+    document.getElementById('btn-concluir-tarefa').classList.toggle('d-none', !tarefa || ['cancelada', 'concluida'].includes(tarefa.status));
+    document.getElementById('btn-fechar-tarefa').classList.toggle('d-none', !!tarefa);
 
     const checklistWrapper = document.getElementById('checklist-add-wrapper');
     const checklistAviso = document.getElementById('checklist-aviso-salvar');
@@ -358,7 +463,7 @@ async function abrirModalTarefa(tarefa = null) {
     document.getElementById('tarefa-etiquetas-lista').innerHTML = '';
     etiquetasDaTarefaAtual = [];
 
-    modalTarefa.show();
+    controlarModal('modalTarefa', 'show');
 
     if (tarefa) {
         await Promise.all([carregarChecklist(tarefa.id), carregarEtiquetasDaTarefa(tarefa.id), carregarHistoricoTarefa(tarefa.id)]);
@@ -367,7 +472,12 @@ async function abrirModalTarefa(tarefa = null) {
 
 function atualizarEstadoRecorrencia() {
     const recorrente = document.getElementById('tarefa-recorrente').checked;
-    document.getElementById('tarefa-frequencia').disabled = !recorrente;
+    const frequencia = document.getElementById('tarefa-frequencia');
+    frequencia.disabled = !recorrente;
+    const personalizada = recorrente && frequencia.value === 'personalizada';
+    document.getElementById('tarefa-dias-wrapper').classList.toggle('d-none', !personalizada);
+    document.getElementById('tarefa-horario-wrapper').classList.toggle('d-none', !recorrente);
+    if (!personalizada) document.getElementById('tarefa-dias-erro').classList.add('d-none');
 }
 
 function preencherSelectColunas() {
@@ -378,17 +488,10 @@ function preencherSelectColunas() {
 async function salvarTarefa(e) {
     e.preventDefault();
 
+    if (!validarDiasRecorrencia()) return;
+
     const id = document.getElementById('tarefa-id').value;
-    const recorrente = document.getElementById('tarefa-recorrente').checked;
-    const payload = {
-        titulo: document.getElementById('tarefa-titulo').value.trim(),
-        descricao: document.getElementById('tarefa-descricao').value.trim(),
-        prioridade: document.getElementById('tarefa-prioridade').value,
-        data_vencimento: document.getElementById('tarefa-vencimento').value || null,
-        coluna_id: Number(document.getElementById('tarefa-coluna').value),
-        recorrente,
-        frequencia: recorrente ? document.getElementById('tarefa-frequencia').value : 'nenhuma',
-    };
+    const payload = obterDadosTarefaFormulario();
 
     try {
         let resp;
@@ -399,7 +502,7 @@ async function salvarTarefa(e) {
             if (!data.sucesso) throw new Error(data.erro || 'Erro ao salvar tarefa.');
 
             await moverTarefa(Number(id), payload.coluna_id, 999);
-            modalTarefa.hide();
+            controlarModal('modalTarefa', 'hide');
             mostrarToast('Tarefa atualizada!', 'success');
             await carregarQuadro();
         } else {
@@ -408,10 +511,96 @@ async function salvarTarefa(e) {
             if (!data.sucesso) throw new Error(data.erro || 'Erro ao salvar tarefa.');
 
             await moverTarefa(data.id, payload.coluna_id, 999);
-            modalTarefa.hide();
+            controlarModal('modalTarefa', 'hide');
             mostrarToast('Tarefa criada!', 'success');
             await carregarQuadro();
         }
+    } catch (erro) {
+        mostrarToast(erro.message, 'danger');
+    }
+}
+
+function obterDadosTarefaFormulario() {
+    const recorrente = document.getElementById('tarefa-recorrente').checked;
+    const frequencia = recorrente ? document.getElementById('tarefa-frequencia').value : 'nenhuma';
+    return {
+        titulo: document.getElementById('tarefa-titulo').value.trim(),
+        descricao: document.getElementById('tarefa-descricao').value.trim(),
+        prioridade: document.getElementById('tarefa-prioridade').value,
+        data_vencimento: document.getElementById('tarefa-vencimento').value || null,
+        coluna_id: Number(document.getElementById('tarefa-coluna').value),
+        recorrente,
+        frequencia,
+        dias_semana: frequencia === 'personalizada'
+            ? [...document.querySelectorAll('#tarefa-dias-semana input[type="checkbox"]:checked')].map(input => Number(input.value))
+            : [],
+        horario_recorrencia: recorrente
+            ? document.getElementById('tarefa-horario-recorrencia').value || null
+            : null,
+    };
+}
+
+function validarDiasRecorrencia() {
+    const personalizada = document.getElementById('tarefa-recorrente').checked
+        && document.getElementById('tarefa-frequencia').value === 'personalizada';
+    const diasSelecionados = document.querySelectorAll('#tarefa-dias-semana input[type="checkbox"]:checked').length;
+    const erro = document.getElementById('tarefa-dias-erro');
+    erro.classList.toggle('d-none', !personalizada || diasSelecionados > 0);
+
+    if (personalizada && diasSelecionados === 0) {
+        mostrarToast('Selecione pelo menos um dia da semana para a recorrência personalizada.', 'warning');
+        return false;
+    }
+
+    return true;
+}
+
+async function concluirTarefa() {
+    const form = document.getElementById('form-tarefa');
+    if (!form.reportValidity()) return;
+    if (!validarDiasRecorrencia()) return;
+
+    const id = document.getElementById('tarefa-id').value;
+    if (!id) return;
+
+    try {
+        const resp = await fetch(API_TAREFAS, {
+            method: 'PUT',
+            body: JSON.stringify({ ...obterDadosTarefaFormulario(), id: Number(id), acao: 'concluir' }),
+        });
+        const data = await resp.json();
+        if (!data.sucesso) throw new Error(data.erro || 'Erro ao concluir tarefa.');
+
+        controlarModal('modalTarefa', 'hide');
+        mostrarToast('Tarefa concluída e registrada.', 'success');
+        await carregarQuadro();
+    } catch (erro) {
+        mostrarToast(erro.message, 'danger');
+    }
+}
+
+async function cancelarTarefa(e) {
+    e.preventDefault();
+
+    const form = document.getElementById('form-cancelamento');
+    if (!form.reportValidity()) return;
+
+    const id = document.getElementById('tarefa-id').value;
+    const motivo = document.getElementById('motivo-cancelamento').value.trim();
+    if (!id || !motivo) return;
+
+    try {
+        const resp = await fetch(API_TAREFAS, {
+            method: 'PUT',
+            body: JSON.stringify({ id: Number(id), acao: 'cancelar', motivo_cancelamento: motivo }),
+        });
+        const data = await resp.json();
+        if (!data.sucesso) throw new Error(data.erro || 'Erro ao cancelar tarefa.');
+
+        controlarModal('modalCancelamento', 'hide');
+        controlarModal('modalTarefa', 'hide');
+        mostrarToast('Tarefa cancelada e registrada.', 'success');
+        await carregarQuadro();
     } catch (erro) {
         mostrarToast(erro.message, 'danger');
     }
@@ -427,31 +616,8 @@ async function excluirTarefa() {
         const data = await resp.json();
         if (!data.sucesso) throw new Error(data.erro || 'Erro ao excluir.');
 
-        modalTarefa.hide();
-        mostrarToast('Tarefa excluída.', 'success');
-        await carregarQuadro();
-    } catch (erro) {
-        mostrarToast(erro.message, 'danger');
-    }
-}
-
-async function cancelarTarefa(e) {
-    e.preventDefault();
-    const id = document.getElementById('tarefa-id').value;
-    const motivo = document.getElementById('motivo-cancelamento').value.trim();
-    if (!id || !motivo) return;
-
-    try {
-        const resp = await fetch(API_TAREFAS, {
-            method: 'PUT',
-            body: JSON.stringify({ id: Number(id), acao: 'cancelar', motivo_cancelamento: motivo }),
-        });
-        const data = await resp.json();
-        if (!data.sucesso) throw new Error(data.erro || 'Erro ao cancelar tarefa.');
-
-        modalCancelamento.hide();
-        modalTarefa.hide();
-        mostrarToast('Tarefa cancelada e registrada.', 'success');
+        controlarModal('modalTarefa', 'hide');
+        mostrarToast(data.aviso || 'Tarefa excluída.', data.aviso ? 'warning' : 'success');
         await carregarQuadro();
     } catch (erro) {
         mostrarToast(erro.message, 'danger');
@@ -501,14 +667,19 @@ function renderizarChecklist(itens) {
 
     itens.forEach(item => {
         const li = document.createElement('li');
-        li.className = 'list-group-item d-flex align-items-center gap-2 py-1';
+        li.className = 'list-group-item py-2';
         li.innerHTML = `
-            <input type="checkbox" class="form-check-input mt-0" ${item.concluida == 1 ? 'checked' : ''}>
-            <span class="flex-grow-1 ${item.concluida == 1 ? 'text-decoration-line-through text-muted' : ''}">${escapeHtml(item.titulo)}</span>
-            <button type="button" class="btn btn-sm btn-link text-danger p-0"><i class="bi bi-x-lg"></i></button>
+            <div class="d-flex align-items-center gap-2">
+                <input type="checkbox" class="form-check-input mt-0" ${item.concluida == 1 ? 'checked' : ''}>
+                <span class="flex-grow-1 ${item.concluida == 1 ? 'text-decoration-line-through text-muted' : ''}">${escapeHtml(item.titulo)}</span>
+                <button type="button" class="btn btn-sm btn-link text-danger p-0" data-action="remover-subtarefa" aria-label="Remover item do checklist"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <div class="anexos-checklist mt-2 ms-4">
+                <div class="small text-muted">Carregando anexos...</div>
+            </div>
         `;
 
-        li.querySelector('input').addEventListener('change', async e => {
+        li.querySelector('.form-check-input').addEventListener('change', async e => {
             await fetch(API_SUBTASKS, {
                 method: 'PUT',
                 body: JSON.stringify({ id: item.id, concluida: e.target.checked }),
@@ -517,13 +688,21 @@ function renderizarChecklist(itens) {
             await atualizarTarefasEmMemoria();
         });
 
-        li.querySelector('button').addEventListener('click', async () => {
-            await fetch(`${API_SUBTASKS}?id=${item.id}`, { method: 'DELETE' });
-            await carregarChecklist(item.tarefa_id);
-            await atualizarTarefasEmMemoria();
+        li.querySelector('[data-action="remover-subtarefa"]').addEventListener('click', async () => {
+            try {
+                const resp = await fetch(`${API_SUBTASKS}?id=${item.id}`, { method: 'DELETE' });
+                const resultado = await resp.json();
+                if (!resultado.sucesso) throw new Error(resultado.erro || 'Não foi possível remover o item do checklist.');
+                await carregarChecklist(item.tarefa_id);
+                await atualizarTarefasEmMemoria();
+                if (resultado.aviso) mostrarToast(resultado.aviso, 'warning');
+            } catch (erro) {
+                mostrarToast(erro.message, 'danger');
+            }
         });
 
         lista.appendChild(li);
+        carregarAnexosChecklist(item.id, li.querySelector('.anexos-checklist'));
     });
 
     const total = itens.length;
@@ -532,6 +711,88 @@ function renderizarChecklist(itens) {
 
     document.getElementById('checklist-progresso-texto').textContent = total > 0 ? `${feitas}/${total}` : '';
     document.getElementById('checklist-progresso-barra').style.width = `${pct}%`;
+}
+
+async function carregarAnexosChecklist(subtarefaId, container) {
+    try {
+        const resp = await fetch(`${API_ANEXOS_CHECKLIST}?subtarefa_id=${subtarefaId}`).then(r => r.json());
+        if (!resp.sucesso) throw new Error(resp.erro || 'Não foi possível carregar os anexos.');
+
+        const lista = resp.anexos.length
+            ? `<ul class="list-unstyled mb-2">${resp.anexos.map(anexo => `
+                <li class="small d-flex align-items-center gap-2">
+                    <i class="bi bi-paperclip me-1"></i>
+                    <a class="flex-grow-1" href="${API_ANEXOS_CHECKLIST}?download=${Number(anexo.id)}">${escapeHtml(anexo.nome_original)}</a>
+                    <span class="text-muted">(${formatarTamanhoArquivo(anexo.tamanho)})</span>
+                    <button type="button" class="btn btn-sm btn-link text-danger p-0" data-anexo-id="${Number(anexo.id)}" aria-label="Remover anexo">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </li>`).join('')}</ul>`
+            : '';
+
+        container.innerHTML = `
+            ${lista}
+            <label class="btn btn-sm btn-outline-secondary mb-0">
+                <i class="bi bi-paperclip"></i> Anexar documento
+                <input type="file" class="d-none" multiple
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.txt,.csv">
+            </label>
+            <small class="text-muted ms-2">PDF, Office, PNG/JPG, TXT ou CSV · até 10 MB por arquivo</small>`;
+
+        container.querySelector('input[type="file"]').addEventListener('change', event => {
+            enviarAnexosChecklist(subtarefaId, event.currentTarget, container);
+        });
+        container.querySelectorAll('[data-anexo-id]').forEach(botao => {
+            botao.addEventListener('click', async () => {
+                if (!confirm('Remover este documento do checklist?')) return;
+                try {
+                    const resposta = await fetch(`${API_ANEXOS_CHECKLIST}?id=${botao.dataset.anexoId}`, { method: 'DELETE' });
+                    const resultado = await resposta.json();
+                    if (!resultado.sucesso) throw new Error(resultado.erro || 'Não foi possível remover o anexo.');
+                    await carregarAnexosChecklist(subtarefaId, container);
+                    mostrarToast(resultado.aviso || 'Documento removido do checklist.', resultado.aviso ? 'warning' : 'success');
+                } catch (erro) {
+                    mostrarToast(erro.message, 'danger');
+                }
+            });
+        });
+    } catch (erro) {
+        container.innerHTML = `<small class="text-danger">${escapeHtml(erro.message)}</small>`;
+    }
+}
+
+async function enviarAnexosChecklist(subtarefaId, input, container) {
+    const arquivos = Array.from(input.files || []);
+    if (!arquivos.length) return;
+
+    input.disabled = true;
+    try {
+        for (const arquivo of arquivos) {
+            const formulario = new FormData();
+            formulario.append('subtarefa_id', String(subtarefaId));
+            formulario.append('arquivo', arquivo);
+
+            const resp = await fetch(API_ANEXOS_CHECKLIST, { method: 'POST', body: formulario });
+            const resultado = await resp.json();
+            if (!resultado.sucesso) throw new Error(resultado.erro || `Não foi possível anexar ${arquivo.name}.`);
+        }
+
+        mostrarToast(arquivos.length === 1 ? 'Documento anexado ao checklist.' : 'Documentos anexados ao checklist.', 'success');
+        await carregarAnexosChecklist(subtarefaId, container);
+    } catch (erro) {
+        mostrarToast(erro.message, 'danger');
+        await carregarAnexosChecklist(subtarefaId, container);
+    } finally {
+        input.value = '';
+        input.disabled = false;
+    }
+}
+
+function formatarTamanhoArquivo(tamanho) {
+    const bytes = Number(tamanho);
+    return bytes < 1024 * 1024
+        ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+        : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function adicionarItemChecklist() {
@@ -577,12 +838,22 @@ function renderizarEtiquetasNoModal() {
     container.innerHTML = todasEtiquetas.map(e => {
         const ativa = etiquetasDaTarefaAtual.includes(e.id);
         return `
-            <button type="button"
-                class="badge rounded-pill border-0 etiqueta-toggle"
-                data-id="${e.id}"
-                style="background:${ativa ? e.cor : '#e9ecef'}; color:${ativa ? '#fff' : '#495057'}; cursor:pointer;">
-                ${ativa ? '<i class="bi bi-check-lg"></i> ' : ''}${escapeHtml(e.nome)}
-            </button>`;
+            <div class="etiqueta-item d-inline-flex align-items-center gap-1">
+                <button type="button"
+                    class="badge rounded-pill border-0 etiqueta-toggle"
+                    data-id="${Number(e.id)}"
+                    style="background:${ativa ? corEtiquetaCss(e.cor) : '#e9ecef'}; color:${ativa ? '#fff' : '#495057'}; cursor:pointer;">
+                    ${ativa ? '<i class="bi bi-check-lg"></i> ' : ''}${escapeHtml(e.nome)}
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary btn-editar-etiqueta"
+                    data-id="${Number(e.id)}" aria-label="Editar etiqueta" title="Editar etiqueta">
+                    <i class="bi bi-pencil"></i>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-danger btn-excluir-etiqueta"
+                    data-id="${Number(e.id)}" aria-label="Excluir etiqueta" title="Excluir etiqueta">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>`;
     }).join('');
 
     container.querySelectorAll('.etiqueta-toggle').forEach(btn => {
@@ -594,15 +865,124 @@ function renderizarEtiquetasNoModal() {
             const etiquetaId = Number(btn.dataset.id);
             const jaAtiva = etiquetasDaTarefaAtual.includes(etiquetaId);
 
-            await fetch(API_TAGS, {
-                method: 'POST',
-                body: JSON.stringify({ tarefa_id: Number(tarefaId), etiqueta_id: etiquetaId, associar: !jaAtiva }),
-            });
+            try {
+                const resposta = await fetch(API_TAGS, {
+                    method: 'POST',
+                    body: JSON.stringify({ tarefa_id: Number(tarefaId), etiqueta_id: etiquetaId, associar: !jaAtiva }),
+                }).then(r => r.json());
+                if (!resposta.sucesso) throw new Error(resposta.erro || 'Não foi possível atualizar a etiqueta da tarefa.');
 
-            await carregarEtiquetasDaTarefa(tarefaId);
-            await atualizarTarefasEmMemoria();
+                await carregarEtiquetasDaTarefa(tarefaId);
+                await atualizarTarefasEmMemoria();
+            } catch (erro) {
+                mostrarToast(erro.message, 'danger');
+            }
         });
     });
+
+    container.querySelectorAll('.btn-editar-etiqueta').forEach(btn => {
+        btn.addEventListener('click', () => iniciarEdicaoEtiqueta(
+            todasEtiquetas.find(etiqueta => Number(etiqueta.id) === Number(btn.dataset.id)),
+            btn.closest('.etiqueta-item')
+        ));
+    });
+
+    container.querySelectorAll('.btn-excluir-etiqueta').forEach(btn => {
+        btn.addEventListener('click', () => excluirEtiqueta(
+            todasEtiquetas.find(etiqueta => Number(etiqueta.id) === Number(btn.dataset.id))
+        ));
+    });
+}
+
+async function excluirEtiqueta(etiqueta) {
+    if (!etiqueta) return;
+    if (!confirm(`Excluir a etiqueta "${etiqueta.nome}"? Ela será removida de todas as tarefas.`)) return;
+
+    try {
+        const resposta = await fetch(`${API_TAGS}?id=${encodeURIComponent(etiqueta.id)}`, { method: 'DELETE' })
+            .then(r => r.json());
+        if (!resposta.sucesso) throw new Error(resposta.erro || 'Não foi possível excluir a etiqueta.');
+
+        todasEtiquetas = todasEtiquetas.filter(item => Number(item.id) !== Number(etiqueta.id));
+        etiquetasDaTarefaAtual = etiquetasDaTarefaAtual.filter(id => Number(id) !== Number(etiqueta.id));
+        if (Number(filtros.etiqueta) === Number(etiqueta.id)) {
+            filtros.etiqueta = '';
+            document.getElementById('filtro-etiqueta').value = '';
+        }
+
+        preencherFiltroEtiquetas();
+        renderizarEtiquetasNoModal();
+        renderizarQuadro();
+        renderizarProximasAVencer();
+        mostrarToast('Etiqueta excluída e removida de todas as tarefas.', 'success');
+    } catch (erro) {
+        mostrarToast(erro.message, 'danger');
+    }
+}
+
+function iniciarEdicaoEtiqueta(etiqueta, container) {
+    if (!etiqueta || !container) return;
+
+    container.innerHTML = `
+        <div class="form-editar-etiqueta d-flex flex-wrap align-items-center gap-1">
+            <input type="text" class="form-control form-control-sm" name="nome" maxlength="40"
+                aria-label="Nome da etiqueta" required value="${escapeAttribute(etiqueta.nome)}">
+            <input type="color" class="form-control form-control-color form-control-sm" name="cor"
+                aria-label="Cor da etiqueta" value="${corEtiquetaCss(etiqueta.cor)}">
+            <button type="button" class="btn btn-sm btn-success btn-salvar-edicao-etiqueta" aria-label="Salvar etiqueta" title="Salvar">
+                <i class="bi bi-check-lg"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary btn-cancelar-edicao-etiqueta"
+                aria-label="Cancelar edição" title="Cancelar">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>`;
+
+    const editor = container.querySelector('.form-editar-etiqueta');
+    const salvarEdicao = async () => {
+        const nomeInput = editor.querySelector('[name="nome"]');
+        const nome = nomeInput.value.trim();
+        if (!nome) {
+            nomeInput.focus();
+            return;
+        }
+
+        const salvar = editor.querySelector('.btn-salvar-edicao-etiqueta');
+        salvar.disabled = true;
+        try {
+            const resposta = await fetch(API_TAGS, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    id: Number(etiqueta.id),
+                    nome,
+                    cor: editor.querySelector('[name="cor"]').value,
+                }),
+            }).then(r => r.json());
+            if (!resposta.sucesso) throw new Error(resposta.erro || 'Não foi possível editar a etiqueta.');
+
+            const listaAtualizada = await fetch(API_TAGS).then(r => r.json());
+            if (!listaAtualizada.sucesso) throw new Error(listaAtualizada.erro || 'Não foi possível recarregar as etiquetas.');
+            todasEtiquetas = listaAtualizada.etiquetas;
+            preencherFiltroEtiquetas();
+            renderizarEtiquetasNoModal();
+            renderizarQuadro();
+            renderizarProximasAVencer();
+            mostrarToast('Etiqueta atualizada.', 'success');
+        } catch (erro) {
+            salvar.disabled = false;
+            mostrarToast(erro.message, 'danger');
+        }
+    };
+
+    editor.querySelector('.btn-salvar-edicao-etiqueta').addEventListener('click', salvarEdicao);
+    editor.querySelector('[name="nome"]').addEventListener('keydown', evento => {
+        if (evento.key === 'Enter') {
+            evento.preventDefault();
+            salvarEdicao();
+        }
+    });
+    container.querySelector('.btn-cancelar-edicao-etiqueta').addEventListener('click', renderizarEtiquetasNoModal);
+    editor.querySelector('[name="nome"]').focus();
 }
 
 async function criarEAssociarEtiqueta() {
@@ -649,8 +1029,9 @@ async function criarEAssociarEtiqueta() {
 async function atualizarTarefasEmMemoria() {
     const resp = await fetch(API_TAREFAS).then(r => r.json());
     if (resp.sucesso) {
-        tarefas = resp.tarefas.filter(t => t.status !== 'cancelada');
+        tarefas = resp.tarefas.filter(tarefaVisivelNoQuadro);
         renderizarQuadro();
+        renderizarProximasAVencer();
     }
 }
 
@@ -667,7 +1048,7 @@ function abrirModalColuna(coluna = null) {
     document.getElementById('modalColunaTitulo').textContent = coluna ? 'Editar Coluna' : 'Nova Coluna';
     document.getElementById('btn-salvar-coluna').textContent = coluna ? 'Salvar' : 'Criar';
 
-    modalColuna.show();
+    controlarModal('modalColuna', 'show');
 }
 
 async function salvarColuna(e) {
@@ -687,7 +1068,7 @@ async function salvarColuna(e) {
         const data = await resp.json();
         if (!data.sucesso) throw new Error(data.erro || 'Erro ao salvar coluna.');
 
-        modalColuna.hide();
+        controlarModal('modalColuna', 'hide');
         mostrarToast(id ? 'Coluna atualizada!' : 'Coluna criada!', 'success');
         await carregarQuadro();
     } catch (erro) {
@@ -721,6 +1102,10 @@ function escapeHtml(texto) {
     return div.innerHTML;
 }
 
+function escapeAttribute(texto) {
+    return escapeHtml(texto).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function truncar(texto, max) {
     return texto.length > max ? texto.slice(0, max) + '…' : texto;
 }
@@ -730,11 +1115,58 @@ function formatarData(dataIso) {
     return `${dia}/${mes}/${ano}`;
 }
 
+function corEtiquetaCss(cor) {
+    return /^#[0-9a-fA-F]{6}$/.test(String(cor)) ? cor : '#0d6efd';
+}
+
+function obterDataHojeSaoPaulo() {
+    const partes = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(new Date());
+    const valores = Object.fromEntries(partes.filter(parte => parte.type !== 'literal').map(parte => [parte.type, parte.value]));
+    return `${valores.year}-${valores.month}-${valores.day}`;
+}
+
+function dataCalendarioValida(valor) {
+    return typeof valor === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(valor) && Number.isFinite(diasEntreDatas(valor, valor));
+}
+
+function diasEntreDatas(inicio, fim) {
+    const converter = data => {
+        const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(data);
+        if (!partes) return NaN;
+        const timestamp = Date.UTC(Number(partes[1]), Number(partes[2]) - 1, Number(partes[3]));
+        const dataNormalizada = new Date(timestamp).toISOString().slice(0, 10);
+        return dataNormalizada === data ? timestamp : NaN;
+    };
+    const inicioTimestamp = converter(inicio);
+    const fimTimestamp = converter(fim);
+    return Number.isFinite(inicioTimestamp) && Number.isFinite(fimTimestamp)
+        ? (fimTimestamp - inicioTimestamp) / 86400000
+        : NaN;
+}
+
+function classificarVencimento(dataVencimento) {
+    if (!dataCalendarioValida(dataVencimento)) return null;
+    const hoje = obterDataHojeSaoPaulo();
+    if (dataVencimento < hoje) return 'atrasada';
+    if (dataVencimento === hoje) return 'hoje';
+    return 'futura';
+}
+
 function rotuloPrioridade(p) {
     return { baixa: 'Baixa', media: 'Média', alta: 'Alta' }[p] ?? p;
 }
 
 function mostrarToast(mensagem, tipo = 'success') {
+    if (!window.bootstrap?.Toast) {
+        window.alert(mensagem);
+        return;
+    }
+
     const toastEl = document.getElementById('toast');
     const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
     toastEl.className = `toast align-items-center text-white border-0 bg-${tipo}`;

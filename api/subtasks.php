@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/checklist_attachments_storage.php';
 
 $pdo    = getConnection();
 $metodo = $_SERVER['REQUEST_METHOD'];
@@ -25,24 +26,9 @@ function corpoRequisicao(): array
     return is_array($input) ? $input : [];
 }
 
-/**
- * Atualiza automaticamente a data de conclusão da tarefa-pai quando
- * todas as subtarefas ficam concluídas (e limpa se alguma reabrir).
- */
-function atualizarConclusaoTarefa(PDO $pdo, int $tarefaId): void
-{
-    $stmt = $pdo->prepare('SELECT COUNT(*) AS total, SUM(concluida) AS feitas FROM subtarefas WHERE tarefa_id = ?');
-    $stmt->execute([$tarefaId]);
-    $r = $stmt->fetch();
-
-    if ((int)$r['total'] > 0 && (int)$r['total'] === (int)$r['feitas']) {
-        $pdo->prepare('UPDATE tarefas SET concluida_em = COALESCE(concluida_em, NOW()) WHERE id = ?')->execute([$tarefaId]);
-    } else {
-        $pdo->prepare('UPDATE tarefas SET concluida_em = NULL WHERE id = ?')->execute([$tarefaId]);
-    }
-}
-
 try {
+    garantirTabelaAnexosChecklist($pdo);
+
     switch ($metodo) {
 
         // ---------------------------------------------------------
@@ -77,10 +63,12 @@ try {
             $stmt = $pdo->prepare(
                 'INSERT INTO subtarefas (tarefa_id, titulo, ordem) VALUES (:tarefa_id, :titulo, :ordem)'
             );
+            $pdo->beginTransaction();
             $stmt->execute([':tarefa_id' => $tarefaId, ':titulo' => $titulo, ':ordem' => $proximaOrdem]);
+            $subtarefaId = (int)$pdo->lastInsertId();
 
-            atualizarConclusaoTarefa($pdo, $tarefaId);
-            responder(true, ['id' => (int)$pdo->lastInsertId()], 201);
+            $pdo->commit();
+            responder(true, ['id' => $subtarefaId], 201);
             break;
 
         // ---------------------------------------------------------
@@ -122,9 +110,10 @@ try {
             }
 
             $sql = 'UPDATE subtarefas SET ' . implode(', ', $campos) . ' WHERE id = :id';
+            $pdo->beginTransaction();
             $pdo->prepare($sql)->execute($params);
 
-            atualizarConclusaoTarefa($pdo, (int)$atual['tarefa_id']);
+            $pdo->commit();
             responder(true);
             break;
 
@@ -139,22 +128,23 @@ try {
                 responder(false, ['erro' => 'ID inválido.'], 422);
             }
 
-            $stmtAtual = $pdo->prepare('SELECT tarefa_id FROM subtarefas WHERE id = ?');
-            $stmtAtual->execute([$id]);
-            $atual = $stmtAtual->fetch();
+            $stmtAnexos = $pdo->prepare('SELECT arquivo FROM checklist_anexos WHERE subtarefa_id = ?');
+            $stmtAnexos->execute([$id]);
+            $arquivosAnexos = $stmtAnexos->fetchAll(PDO::FETCH_COLUMN);
 
+            $pdo->beginTransaction();
             $pdo->prepare('DELETE FROM subtarefas WHERE id = ?')->execute([$id]);
-
-            if ($atual) {
-                atualizarConclusaoTarefa($pdo, (int)$atual['tarefa_id']);
-            }
-
-            responder(true);
+            $pdo->commit();
+            $avisos = limparArquivosAnexosChecklist($arquivosAnexos);
+            responder(true, $avisos ? ['aviso' => 'O item foi removido, mas alguns arquivos anexados não puderam ser limpos do armazenamento.'] : []);
             break;
 
         default:
             responder(false, ['erro' => 'Método não suportado.'], 405);
     }
 } catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     responder(false, ['erro' => 'Erro interno: ' . $e->getMessage()], 500);
 }

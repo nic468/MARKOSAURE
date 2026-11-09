@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS tarefas (
     encerrada_em TIMESTAMP NULL DEFAULT NULL,
     recorrente TINYINT(1) NOT NULL DEFAULT 0,
     frequencia VARCHAR(20) NOT NULL DEFAULT 'nenhuma',
+    dias_semana VARCHAR(13) NULL DEFAULT NULL,
+    horario_recorrencia TIME NULL DEFAULT NULL,
     proxima_repeticao DATE NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -67,6 +69,20 @@ CREATE TABLE IF NOT EXISTS subtarefas (
     CONSTRAINT fk_subtarefa_tarefa FOREIGN KEY (tarefa_id)
         REFERENCES tarefas(id) ON DELETE CASCADE
 );
+
+-- Documentos anexados aos itens do checklist
+CREATE TABLE IF NOT EXISTS checklist_anexos (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    subtarefa_id INT NOT NULL,
+    nome_original VARCHAR(255) NOT NULL,
+    arquivo VARCHAR(80) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    tamanho BIGINT UNSIGNED NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_checklist_anexo_arquivo (arquivo),
+    CONSTRAINT fk_checklist_anexo_subtarefa FOREIGN KEY (subtarefa_id)
+        REFERENCES subtarefas(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Etiquetas (labels) reutilizáveis
 CREATE TABLE IF NOT EXISTS etiquetas (
