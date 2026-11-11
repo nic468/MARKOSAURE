@@ -7,9 +7,9 @@
 declare(strict_types=1);
 
 const DB_HOST = 'localhost';
-const DB_NAME = 'kanban_tasks';
-const DB_USER = 'root';
-const DB_PASS = '';
+const DB_NAME = 'u517376960_BJ3vm';
+const DB_USER = 'u517376960_9mU2q';
+const DB_PASS = 'NIubOrl?aa>:YR88';
 const DB_CHARSET = 'utf8mb4';
 
 function getConnection(): PDO
